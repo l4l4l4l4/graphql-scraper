@@ -226,9 +226,21 @@ class GraphQLScraper:
                     return field['name']
         return None
 
-    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 3) -> str:
+    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 4) -> str:
         """Recursively build a selection set for a field type"""
         if depth >= max_depth:
+            # At max depth, try to include at least one scalar field
+            base_type = self._get_base_type(field_type)
+            if not base_type or base_type['kind'] in ['SCALAR', 'ENUM']:
+                return ""
+            # Find the first scalar field
+            if base_type.get('fields'):
+                for field in base_type['fields']:
+                    if field['name'].startswith('__'):
+                        continue
+                    field_base_type = self._get_base_type(field['type'])
+                    if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
+                        return field['name']
             return ""
             
         base_type = self._get_base_type(field_type)
@@ -248,9 +260,15 @@ class GraphQLScraper:
                 else:
                     # For non-scalar fields, recurse
                     sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
-                    if sub_selection:
-                        field_str += f" {{ {sub_selection} }}"
-                        fields.append(field_str)
+                    if not sub_selection:
+                        # If no selection set from recursion, try to find a scalar field
+                        first_scalar = self._get_first_scalar_field(field['type'])
+                        if first_scalar:
+                            sub_selection = first_scalar
+                        else:
+                            continue
+                    field_str += f" {{ {sub_selection} }}"
+                    fields.append(field_str)
                 
         return ' '.join(fields)
 
