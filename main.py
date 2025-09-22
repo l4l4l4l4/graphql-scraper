@@ -240,17 +240,18 @@ class GraphQLScraper:
         if args_list:
             query_parts.append(f"({', '.join(args_list)})")
 
-        # Add subfields if it's an object type
-        field_type = self._get_base_type(field['type'])
-        if field_type and field_type.get('fields') and field_type['kind'] == 'OBJECT':
-            # Get some sample subfields (limit to 3 to avoid huge queries)
-            subfields = []
-            for subfield in field_type['fields'][:3]:
-                if not subfield['name'].startswith('__'):
-                    subfields.append(subfield['name'])
-
-            if subfields:
-                query_parts.append(f"{{ {' '.join(subfields)} }}")
+        # Add subfields if it's not a leaf type (i.e., not scalar or enum)
+        base_type = self._get_base_type(field['type'])
+        if base_type and base_type['kind'] not in ['SCALAR', 'ENUM']:
+            subfields = ['__typename']
+            # For object types, add up to 3 additional fields
+            if base_type['kind'] == 'OBJECT' and base_type.get('fields'):
+                for subfield in base_type['fields']:
+                    if (not subfield['name'].startswith('__') and 
+                        subfield['name'] != '__typename' and 
+                        len(subfields) < 4):
+                        subfields.append(subfield['name'])
+            query_parts.append(f"{{ {' '.join(subfields)} }}")
 
         # Build the final query string
         query_body = ' '.join(query_parts)
