@@ -229,7 +229,6 @@ class GraphQLScraper:
             return ""
             
         fields = []
-        indent = "  " * (depth + 1)
         for field in type_def['fields']:
             if field['name'].startswith('__'):
                 continue
@@ -241,17 +240,20 @@ class GraphQLScraper:
             if field_base_type and field_base_type['kind'] not in ['SCALAR', 'ENUM']:
                 sub_selection = self._build_selection_set(field['type'], depth + 1)
                 if sub_selection:
-                    field_str += f" {{\n{sub_selection}\n{indent}}}"
+                    # For nested fields, add proper indentation
+                    field_str += f" {{\n{sub_selection}\n    }}"
+                else:
+                    fields.append(field_str)
+                    continue
             fields.append(field_str)
         
-        # Format fields with proper indentation
-        indent = "  " * (depth + 1)
+        # Format fields with proper indentation - always use 4 spaces for fields inside selection sets
         if depth == 0:
-            # Top-level selection set
-            return "\n".join(f"  {field}" for field in fields)
+            # Top-level selection set (inside query) - indent by 4 spaces
+            return "\n".join(f"    {field}" for field in fields)
         else:
-            # Nested selection set
-            nested_indent = "  " * (depth + 1)
+            # Nested selection set - indent by 4 + 2*depth spaces
+            nested_indent = "  " * (depth + 2)
             return "\n".join(f"{nested_indent}{field}" for field in fields)
 
     def _format_value_for_query(self, value: Any) -> str:
