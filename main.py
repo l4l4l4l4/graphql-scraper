@@ -229,6 +229,7 @@ class GraphQLScraper:
             return ""
             
         fields = []
+        indent = "  " * (depth + 1)
         for field in type_def['fields']:
             if field['name'].startswith('__'):
                 continue
@@ -240,10 +241,18 @@ class GraphQLScraper:
             if field_base_type and field_base_type['kind'] not in ['SCALAR', 'ENUM']:
                 sub_selection = self._build_selection_set(field['type'], depth + 1)
                 if sub_selection:
-                    field_str += f" {{ {sub_selection} }}"
+                    field_str += f" {{\n{sub_selection}\n{indent}}}"
             fields.append(field_str)
-                
-        return ' '.join(fields)
+        
+        # Format fields with proper indentation
+        indent = "  " * (depth + 1)
+        if depth == 0:
+            # Top-level selection set
+            return "\n".join(f"  {field}" for field in fields)
+        else:
+            # Nested selection set
+            nested_indent = "  " * (depth + 1)
+            return "\n".join(f"{nested_indent}{field}" for field in fields)
 
     def _format_value_for_query(self, value: Any) -> str:
         """Format a value for direct inclusion in a GraphQL query"""
@@ -277,21 +286,26 @@ class GraphQLScraper:
                     formatted_value = self._format_value_for_query(value)
                     args_list.append(f"{arg_name}: {formatted_value}")
 
-        # Build the query
-        query_parts = [field_name]
+        # Build the field with arguments
+        field_with_args = field_name
         if args_list:
-            query_parts.append(f"({', '.join(args_list)})")
+            field_with_args += f"({', '.join(args_list)})"
 
         # Build selection set for non-leaf types
         base_type = self._get_base_type(field['type'])
         if base_type and base_type['kind'] not in ['SCALAR', 'ENUM']:
             selection_set = self._build_selection_set(field['type'])
             if selection_set:
-                query_parts.append(f"{{ {selection_set} }}")
-
-        # Build the final query string
-        query_body = ' '.join(query_parts)
-        query_str = f"{operation_type} {{ {query_body} }}"
+                # Format the query with proper indentation
+                query_str = f"""{operation_type} {{
+  {field_with_args} {{
+{selection_set}
+  }}
+}}"""
+            else:
+                query_str = f"{operation_type} {{\n  {field_with_args}\n}}"
+        else:
+            query_str = f"{operation_type} {{\n  {field_with_args}\n}}"
 
         return query_str, {}
 
