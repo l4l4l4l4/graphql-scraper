@@ -245,11 +245,25 @@ class GraphQLScraper:
                 
         return ' '.join(fields)
 
+    def _format_value_for_query(self, value: Any) -> str:
+        """Format a value for direct inclusion in a GraphQL query"""
+        if isinstance(value, str):
+            # Escape quotes and wrap in quotes
+            escaped = value.replace('"', '\\"')
+            return f'"{escaped}"'
+        elif isinstance(value, bool):
+            return "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            return str(value)
+        elif value is None:
+            return "null"
+        else:
+            # Fallback to string representation
+            return f'"{str(value)}"'
+
     def _build_query(self, field: Dict, operation_type: str) -> tuple:
         """Build a GraphQL query for a field with arguments"""
         field_name = field['name']
-        variables = {}
-        variable_definitions = []
         args_list = []
 
         # Handle arguments - include non-null arguments and arguments without default values
@@ -259,11 +273,9 @@ class GraphQLScraper:
                 arg_type = arg['type']
                 # Include argument if it's non-null OR doesn't have a default value
                 if self._is_required_type(arg_type) or not arg.get('defaultValue'):
-                    var_name = f"var_{arg_name}"
-                    type_str = self._get_type_string(arg_type)
-                    variable_definitions.append(f"${var_name}: {type_str}")
-                    args_list.append(f"{arg_name}: ${var_name}")
-                    variables[var_name] = self._generate_default_value(arg_type)
+                    value = self._generate_default_value(arg_type)
+                    formatted_value = self._format_value_for_query(value)
+                    args_list.append(f"{arg_name}: {formatted_value}")
 
         # Build the query
         query_parts = [field_name]
@@ -279,12 +291,9 @@ class GraphQLScraper:
 
         # Build the final query string
         query_body = ' '.join(query_parts)
-        if variable_definitions:
-            query_str = f"{operation_type}({', '.join(variable_definitions)}) {{ {query_body} }}"
-        else:
-            query_str = f"{operation_type} {{ {query_body} }}"
+        query_str = f"{operation_type} {{ {query_body} }}"
 
-        return query_str, variables
+        return query_str, {}
 
     def _get_base_type(self, type_ref: Dict) -> Optional[Dict]:
         """Get the base type from a type reference"""
