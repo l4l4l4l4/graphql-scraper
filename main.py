@@ -228,7 +228,7 @@ class GraphQLScraper:
                     return field['name']
         return None
 
-    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 4) -> str:
+    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 3) -> str:
         """Recursively build a selection set for a field type"""
         if depth >= max_depth:
             return ""
@@ -239,90 +239,32 @@ class GraphQLScraper:
             
         fields = []
         
-        # First, add all scalar fields
+        # Include all fields that are not introspection fields
         for field in base_type.get('fields', []):
             if field['name'].startswith('__'):
                 continue
+                
             field_base_type = self._get_base_type(field['type'])
+            # If it's a scalar or enum, just add the field name
             if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
                 fields.append(field['name'])
-                
-        # Handle 'edges' field for Relay-style connections
-        edges_field = next((f for f in base_type.get('fields', []) if f['name'] == 'edges'), None)
-        if edges_field and depth < max_depth - 1:
-            edges_type = self._get_base_type(edges_field['type'])
-            if edges_type and edges_type['kind'] == 'OBJECT':
-                # Build selection set for edges type
-                edges_selection = self._build_selection_set(edges_field['type'], depth + 1, max_depth)
-                if edges_selection:
-                    fields.append(f"edges {{ {edges_selection} }}")
-                else:
-                    # If no selection set, try to include node field
-                    node_in_edges = next((f for f in edges_type.get('fields', []) if f['name'] == 'node'), None)
-                    if node_in_edges:
-                        node_selection = self._build_selection_set(node_in_edges['type'], depth + 2, max_depth)
-                        if node_selection:
-                            fields.append(f"edges {{ node {{ {node_selection} }} }}")
-                        else:
-                            # Include at least one scalar field from node
-                            node_type = self._get_base_type(node_in_edges['type'])
-                            if node_type and node_type.get('fields'):
-                                scalars = []
-                                for f in node_type['fields']:
-                                    if f['name'].startswith('__'):
-                                        continue
-                                    f_base_type = self._get_base_type(f['type'])
-                                    if f_base_type and f_base_type['kind'] in ['SCALAR', 'ENUM']:
-                                        scalars.append(f['name'])
-                                        break
-                                if scalars:
-                                    fields.append(f"edges {{ node {{ {scalars[0]} }} }}")
-        
-        # Handle 'node' field directly
-        node_field = next((f for f in base_type.get('fields', []) if f['name'] == 'node'), None)
-        if node_field and depth < max_depth - 1:
-            node_selection = self._build_selection_set(node_field['type'], depth + 1, max_depth)
-            if node_selection:
-                fields.append(f"node {{ {node_selection} }}")
             else:
-                # Include at least one scalar field from node
-                node_type = self._get_base_type(node_field['type'])
-                if node_type and node_type.get('fields'):
-                    scalars = []
-                    for f in node_type['fields']:
-                        if f['name'].startswith('__'):
-                            continue
-                        f_base_type = self._get_base_type(f['type'])
-                        if f_base_type and f_base_type['kind'] in ['SCALAR', 'ENUM']:
-                            scalars.append(f['name'])
-                            break
-                    if scalars:
-                        fields.append(f"node {{ {scalars[0]} }}")
-        
-        # Handle other non-scalar fields
-        for field in base_type.get('fields', []):
-            if field['name'].startswith('__') or field['name'] in ['edges', 'node']:
-                continue
-            field_base_type = self._get_base_type(field['type'])
-            if field_base_type and field_base_type['kind'] not in ['SCALAR', 'ENUM']:
+                # For non-scalar fields, recursively build selection set
                 if depth < max_depth - 1:
                     sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
                     if sub_selection:
                         fields.append(f"{field['name']} {{ {sub_selection} }}")
                     else:
-                        # Try to include at least one scalar field from the type
-                        field_type_obj = self._get_base_type(field['type'])
-                        if field_type_obj and field_type_obj.get('fields'):
-                            scalars = []
-                            for f in field_type_obj['fields']:
-                                if f['name'].startswith('__'):
+                        # If no sub-selection, try to include at least one scalar field from the type
+                        sub_base_type = self._get_base_type(field['type'])
+                        if sub_base_type and sub_base_type.get('fields'):
+                            for sub_field in sub_base_type['fields']:
+                                if sub_field['name'].startswith('__'):
                                     continue
-                                f_base_type = self._get_base_type(f['type'])
-                                if f_base_type and f_base_type['kind'] in ['SCALAR', 'ENUM']:
-                                    scalars.append(f['name'])
+                                sub_field_base_type = self._get_base_type(sub_field['type'])
+                                if sub_field_base_type and sub_field_base_type['kind'] in ['SCALAR', 'ENUM']:
+                                    fields.append(f"{field['name']} {{ {sub_field['name']} }}")
                                     break
-                            if scalars:
-                                fields.append(f"{field['name']} {{ {scalars[0]} }}")
                 
         return ' '.join(fields)
 
