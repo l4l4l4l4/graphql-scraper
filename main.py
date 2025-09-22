@@ -1,0 +1,386 @@
+import sys
+import json
+import time
+import argparse
+from typing import Dict, List, Any, Optional
+import requests
+from urllib.parse import urlparse
+
+class GraphQLScraper:
+    def __init__(self, endpoint_url: str, headers: Optional[Dict[str, str]] = None):
+        self.endpoint_url = endpoint_url
+        self.headers = headers or {'Content-Type': 'application/json'}
+        self.schema = None
+
+    def validate_url(self) -> bool:
+        """Validate the URL format"""
+        try:
+            result = urlparse(self.endpoint_url)
+            return all([result.scheme, result.netloc])
+        except:
+            return False
+
+    def fetch_schema(self) -> Dict:
+        """Fetch GraphQL schema using introspection"""
+        introspection_query = {
+            "query": """
+            query IntrospectionQuery {
+                __schema {
+                    queryType { name }
+                    mutationType { name }
+                    subscriptionType { name }
+                    types {
+                        ...FullType
+                    }
+                    directives {
+                        name
+                        description
+                        locations
+                        args {
+                            ...InputValue
+                        }
+                    }
+                }
+            }
+
+            fragment FullType on __Type {
+                kind
+                name
+                description
+                fields(includeDeprecated: true) {
+                    name
+                    description
+                    args {
+                        ...InputValue
+                    }
+                    type {
+                        ...TypeRef
+                    }
+                    isDeprecated
+                    deprecationReason
+                }
+                inputFields {
+                    ...InputValue
+                }
+                interfaces {
+                    ...TypeRef
+                }
+                enumValues(includeDeprecated: true) {
+                    name
+                    description
+                    isDeprecated
+                    deprecationReason
+                }
+                possibleTypes {
+                    ...TypeRef
+                }
+            }
+
+            fragment InputValue on __InputValue {
+                name
+                description
+                type {
+                    ...TypeRef
+                }
+                defaultValue
+            }
+
+            fragment TypeRef on __Type {
+                kind
+                name
+                ofType {
+                    kind
+                    name
+                    ofType {
+                        kind
+                        name
+                        ofType {
+                            kind
+                            name
+                            ofType {
+                                kind
+                                name
+                                ofType {
+                                    kind
+                                    name
+                                    ofType {
+                                        kind
+                                        name
+                                        ofType {
+                                            kind
+                                            name
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """
+        }
+
+        try:
+            response = requests.post(
+                self.endpoint_url,
+                headers=self.headers,
+                json=introspection_query,
+                timeout=30
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            if 'errors' in data:
+                raise Exception(f"GraphQL errors: {json.dumps(data['errors'], indent=2)}")
+
+            self.schema = data['data']['__schema']
+            print("✅ Schema fetched successfully")
+            return self.schema
+
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"HTTP error: {e}")
+        except json.JSONDecodeError as e:
+            raise Exception(f"Invalid JSON response: {e}")
+
+    def get_root_types(self) -> Dict[str, Any]:
+        """Get root query, mutation, and subscription types"""
+        if not self.schema:
+            self.fetch_schema()
+
+        root_types = {}
+        for root_type in ['queryType', 'mutationType', 'subscriptionType']:
+            if self.schema.get(root_type) and self.schema[root_type].get('name'):
+                type_name = self.schema[root_type]['name']
+                # Find the type definition
+                for schema_type in self.schema['types']:
+                    if schema_type['name'] == type_name:
+                        root_types[root_type.replace('Type', '').capitalize()] = schema_type
+                        break
+
+        return root_types
+
+    def generate_queries_for_type(self, type_def: Dict) -> List[str]:
+        """Generate basic queries for a type"""
+        queries = []
+
+        if type_def.get('fields'):
+            for field in type_def['fields']:
+                field_name = field['name']
+
+                # Skip introspection fields
+                if field_name.startswith('__'):
+                    continue
+
+                # Generate a simple query without arguments
+                query = self._build_query(field)
+                if query:
+                    queries.append(query)
+
+        return queries
+
+    def _build_query(self, field: Dict) -> str:
+        """Build a GraphQL query for a field"""
+        field_name = field['name']
+
+        # Check if field has arguments that require values
+        has_required_args = False
+        if field.get('args'):
+            for arg in field['args']:
+                arg_type = self._get_base_type_name(arg['type'])
+                # Skip if required arguments without defaults
+                if self._is_required_type(arg['type']) and not arg.get('defaultValue'):
+                    has_required_args = True
+                    break
+
+        # Skip fields with required arguments for now
+        if has_required_args:
+            return None
+
+        # Build the query
+        query_parts = [field_name]
+
+        # Add subfields if it's an object type
+        field_type = self._get_base_type(field['type'])
+        if field_type and field_type.get('fields') and field_type['kind'] == 'OBJECT':
+            # Get some sample subfields (limit to 3 to avoid huge queries)
+            subfields = []
+            for subfield in field_type['fields'][:3]:
+                if not subfield['name'].startswith('__'):
+                    subfields.append(subfield['name'])
+
+            if subfields:
+                query_parts.append(f"{{ {' '.join(subfields)} }}")
+
+        return ' '.join(query_parts)
+
+    def _get_base_type(self, type_ref: Dict) -> Optional[Dict]:
+        """Get the base type from a type reference"""
+        while type_ref.get('ofType'):
+            type_ref = type_ref['ofType']
+        return type_ref
+
+    def _get_base_type_name(self, type_ref: Dict) -> Optional[str]:
+        """Get the base type name from a type reference"""
+        base_type = self._get_base_type(type_ref)
+        return base_type.get('name') if base_type else None
+
+    def _is_required_type(self, type_ref: Dict) -> bool:
+        """Check if a type is required (non-null)"""
+        return type_ref.get('kind') == 'NON_NULL'
+
+    def generate_all_queries(self) -> List[str]:
+        """Generate queries for all root types"""
+        if not self.schema:
+            self.fetch_schema()
+
+        root_types = self.get_root_types()
+        all_queries = []
+
+        for type_name, type_def in root_types.items():
+            print(f"🔍 Generating queries for {type_name} type...")
+            queries = self.generate_queries_for_type(type_def)
+            all_queries.extend(queries)
+            print(f"   Generated {len(queries)} queries for {type_name}")
+
+        return all_queries
+
+    def execute_query(self, query: str) -> Dict:
+        """Execute a GraphQL query"""
+        payload = {
+            'query': f"query {{ {query} }}",
+            'variables': {},
+            'operationName': None
+        }
+
+        try:
+            response = requests.post(
+                self.endpoint_url,
+                headers=self.headers,
+                json=payload,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e)}
+        except json.JSONDecodeError as e:
+            return {'error': f'Invalid JSON response: {e}'}
+
+    def scrape_everything(self) -> Dict:
+        """Main scraping function"""
+        print(f"🚀 Starting GraphQL scraping...")
+        print(f"📡 Target endpoint: {self.endpoint_url}")
+
+        if not self.validate_url():
+            raise ValueError("Invalid URL format")
+
+        # 1. Fetch schema
+        self.fetch_schema()
+
+        # 2. Generate all queries
+        queries = self.generate_all_queries()
+        print(f"✅ Generated {len(queries)} total queries")
+
+        if not queries:
+            print("❌ No queries generated. The schema might not have queryable fields.")
+            return {'total_queries': 0, 'successful': 0, 'failed': 0, 'coverage': 0, 'results': []}
+
+        # 3. Execute all queries
+        results = []
+
+        for i, query in enumerate(queries, 1):
+            print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
+
+            result = self.execute_query(query)
+
+            success = 'errors' not in result and 'error' not in result
+            results.append({
+                'query': query,
+                'result': result,
+                'success': success,
+                'errors': result.get('errors'),
+                'error': result.get('error')
+            })
+
+            # Add delay to avoid overwhelming the server
+            time.sleep(0.1)
+
+        # 4. Analyze results
+        successful_queries = [r for r in results if r['success']]
+        failed_queries = [r for r in results if not r['success']]
+
+        coverage = (len(successful_queries) / len(queries)) * 100 if queries else 0
+
+        print(f"\n📈 Scraping Results:")
+        print(f"✅ Successful queries: {len(successful_queries)}")
+        print(f"❌ Failed queries: {len(failed_queries)}")
+        print(f"📊 Total coverage: {coverage:.2f}%")
+
+        return {
+            'total_queries': len(queries),
+            'successful': len(successful_queries),
+            'failed': len(failed_queries),
+            'coverage': coverage,
+            'results': results
+        }
+
+def main():
+    """Main function with CLI argument handling"""
+    parser = argparse.ArgumentParser(
+        description='GraphQL API Scraper - Generates and executes all possible queries from a GraphQL schema'
+    )
+    parser.add_argument(
+        'endpoint_url',
+        help='GraphQL endpoint URL (e.g., https://api.example.com/graphql)'
+    )
+    parser.add_argument(
+        '--output', '-o',
+        default='graphql-scraping-results.json',
+        help='Output filename (default: graphql-scraping-results.json)'
+    )
+    parser.add_argument(
+        '--delay', '-d',
+        type=float,
+        default=0.1,
+        help='Delay between queries in seconds (default: 0.1)'
+    )
+    parser.add_argument(
+        '--auth-token', '-a',
+        help='Authorization token (if required)'
+    )
+
+    args = parser.parse_args()
+
+    # Set up headers if auth token provided
+    headers = {'Content-Type': 'application/json'}
+    if args.auth_token:
+        headers['Authorization'] = f'Bearer {args.auth_token}'
+
+    scraper = GraphQLScraper(args.endpoint_url, headers)
+
+    try:
+        results = scraper.scrape_everything()
+
+        # Save results to file
+        with open(args.output, 'w') as f:
+            json.dump(results, f, indent=2)
+
+        print(f"💾 Results saved to {args.output}")
+
+        # Show sample successful results
+        successful_results = [r for r in results['results'] if r['success']]
+        if successful_results:
+            print("\n🎯 Sample successful queries:")
+            for i, result in enumerate(successful_results[:3], 1):
+                print(f"\n--- Query {i} ---")
+                print(f"Query: {result['query']}")
+                if 'data' in result['result']:
+                    data_keys = list(result['result']['data'].keys()) if result['result']['data'] else []
+                    print(f"Response keys: {data_keys}")
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
