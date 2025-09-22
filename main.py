@@ -275,13 +275,13 @@ class GraphQLScraper:
         variable_definitions = []
         args_list = []
 
-        # Handle arguments - include all required arguments (non-null) regardless of default value
+        # Handle arguments - include non-null arguments and arguments without default values
         if field.get('args'):
             for arg in field['args']:
                 arg_name = arg['name']
                 arg_type = arg['type']
-                # Include all required arguments (non-null types)
-                if self._is_required_type(arg_type):
+                # Include argument if it's non-null OR doesn't have a default value
+                if self._is_required_type(arg_type) or not arg.get('defaultValue'):
                     var_name = f"var_{arg_name}"
                     type_str = self._get_type_string(arg_type)
                     variable_definitions.append(f"${var_name}: {type_str}")
