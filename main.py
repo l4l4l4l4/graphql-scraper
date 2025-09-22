@@ -494,8 +494,9 @@ def main():
         help='Delay between queries in seconds (default: 0.1)'
     )
     parser.add_argument(
-        '--auth-token', '-a',
-        help='Authorization token (if required)'
+        '--header', '-H',
+        action='append',
+        help='HTTP header in "Key: Value" format (can be used multiple times)'
     )
     parser.add_argument(
         '--cookie', '-c',
@@ -504,10 +505,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Set up headers if auth token provided
+    # Set up headers
     headers = {'Content-Type': 'application/json'}
-    if args.auth_token:
-        headers['Authorization'] = f'Bearer {args.auth_token}'
+    if args.header:
+        for header in args.header:
+            if ':' in header:
+                key, value = header.split(':', 1)
+                headers[key.strip()] = value.strip()
 
     # Parse cookies if provided
     cookies = {}
