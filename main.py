@@ -458,13 +458,10 @@ class GraphQLScraper:
         failed_queries = [r for r in results if not r['success']]
         all_queries = queries + mutations
 
-        coverage = (len(successful_queries) / len(all_queries)) * 100 if all_queries else 0
-
         print(f"\n📈 Scraping Results:")
         print(f"✅ Successful queries: {len(successful_queries)}")
         print(f"❌ Failed queries: {len(failed_queries)}")
-        print(f"⏭️  Skipped mutations: {len(mutations)}")
-        print(f"📊 Total coverage: {coverage:.2f}%")
+        print(f"⏭️ Mutations: {len(mutations)}")
         print(f"💾 Results saved to {output_dir}/")
 
         return {
@@ -524,18 +521,6 @@ def main():
 
     try:
         results = scraper.scrape_everything(args.output_dir)
-
-        # Show sample successful results
-        successful_results = [r for r in results['results'] if r['success']]
-        if successful_results:
-            print("\n🎯 Sample successful queries:")
-            for i, result in enumerate(successful_results[:3], 1):
-                print(f"\n--- Query {i} ---")
-                print(f"Query: {result['query']}")
-                if 'data' in result['result']:
-                    data_keys = list(result['result']['data'].keys()) if result['result']['data'] else []
-                    print(f"Response keys: {data_keys}")
-
     except Exception as e:
         print(f"❌ Error: {e}")
         sys.exit(1)
