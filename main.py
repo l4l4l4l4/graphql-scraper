@@ -213,70 +213,58 @@ class GraphQLScraper:
             # For enum types, try to use the first value if available
             return "default"
 
-    def _get_first_scalar_field(self, field_type: Dict) -> Optional[str]:
-        """Get the first scalar field from a type"""
-        base_type = self._get_base_type(field_type)
-        if not base_type or base_type['kind'] in ['SCALAR', 'ENUM']:
-            return None
-        if base_type.get('fields'):
-            for field in base_type['fields']:
-                if field['name'].startswith('__'):
-                    continue
-                field_base_type = self._get_base_type(field['type'])
-                if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
-                    return field['name']
-        return None
-
-    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 4) -> str:
+    def _build_selection_set(self, field_type: Dict, depth: int = 0) -> str:
         """Recursively build a selection set for a field type"""
-        if depth >= max_depth:
+        if depth >= 3:  # Limit depth to avoid overly complex queries
             return ""
             
         base_type = self._get_base_type(field_type)
         if not base_type or base_type['kind'] in ['SCALAR', 'ENUM']:
+            return ""
+            
+        # Get the type definition from the schema
+        type_name = base_type['name']
+        type_def = None
+        for t in self.schema['types']:
+            if t['name'] == type_name:
+                type_def = t
+                break
+                
+        if not type_def or not type_def.get('fields'):
             return ""
             
         fields = []
-        
-        # Handle interface types by including their fields
-        if base_type['kind'] == 'INTERFACE':
-            if base_type.get('fields'):
-                for field in base_type['fields']:
-                    if field['name'].startswith('__'):
-                        continue
-                    field_base_type = self._get_base_type(field['type'])
-                    if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
-                        fields.append(field['name'])
-                    else:
-                        if depth < max_depth - 1:
-                            sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
-                            if sub_selection:
-                                fields.append(f"{field['name']} {{ {sub_selection} }}")
-            return ' '.join(fields)
-        
-        # For object types, include ALL fields
-        if base_type.get('fields'):
-            for field in base_type['fields']:
-                if field['name'].startswith('__'):
-                    continue
-                    
-                field_base_type = self._get_base_type(field['type'])
-                # Always include the field
-                if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
-                    fields.append(field['name'])
+        for field in type_def['fields']:
+            if field['name'].startswith('__'):
+                continue
+                
+            field_str = field['name']
+            field_base_type = self._get_base_type(field['type'])
+            
+            # If it's a non-scalar field, add a selection set
+            if field_base_type and field_base_type['kind'] not in ['SCALAR', 'ENUM']:
+                sub_selection = self._build_selection_set(field['type'], depth + 1)
+                if sub_selection:
+                    field_str += f" {{ {sub_selection} }}"
                 else:
-                    # For non-scalar fields, recursively build selection set
-                    if depth < max_depth - 1:
-                        sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
-                        if sub_selection:
-                            fields.append(f"{field['name']} {{ {sub_selection} }}")
-                        else:
-                            # If no sub-selection was built, include the field without sub-selection
-                            # This handles cases where we're at max depth but still need to include the field
-                            fields.append(field['name'])
-                    else:
-                        # At max depth, include the field without sub-selection
-                        fields.append(field['name'])
+                    # If no sub-selection could be built, try to include at least one field
+                    sub_type_name = field_base_type['name']
+                    sub_type_def = None
+                    for t in self.schema['types']:
+                        if t['name'] == sub_type_name:
+                            sub_type_def = t
+                            break
+                    
+                    if sub_type_def and sub_type_def.get('fields'):
+                        # Find the first scalar field
+                        for sub_field in sub_type_def['fields']:
+                            if sub_field['name'].startswith('__'):
+                                continue
+                            sub_field_base_type = self._get_base_type(sub_field['type'])
+                            if sub_field_base_type and sub_field_base_type['kind'] in ['SCALAR', 'ENUM']:
+                                field_str += f" {{ {sub_field['name']} }}"
+                                break
+            fields.append(field_str)
                 
         return ' '.join(fields)
 
@@ -309,17 +297,11 @@ class GraphQLScraper:
         base_type = self._get_base_type(field['type'])
         if base_type and base_type['kind'] not in ['SCALAR', 'ENUM']:
             selection_set = self._build_selection_set(field['type'])
-            # Always include a selection set for non-leaf types
             if selection_set:
                 query_parts.append(f"{{ {selection_set} }}")
             else:
-                # If no selection set could be built, include at least one field
-                # This should rarely happen, but is a fallback
-                if base_type.get('fields'):
-                    for field_def in base_type['fields']:
-                        if not field_def['name'].startswith('__'):
-                            query_parts.append(f"{{ {field_def['name']} }}")
-                            break
+                # Fallback: include id field if available
+                query_parts.append("{ id }")
 
         # Build the final query string
         query_body = ' '.join(query_parts)
