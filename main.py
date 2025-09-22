@@ -159,7 +159,7 @@ class GraphQLScraper:
 
         return root_types
 
-    def generate_queries_for_type(self, type_def: Dict) -> List[str]:
+    def generate_queries_for_type(self, type_def: Dict) -> List[tuple]:
         """Generate basic queries for a type"""
         queries = []
 
@@ -171,33 +171,73 @@ class GraphQLScraper:
                 if field_name.startswith('__'):
                     continue
 
-                # Generate a simple query without arguments
-                query = self._build_query(field)
+                # Generate a query with arguments
+                query, variables = self._build_query(field)
                 if query:
-                    queries.append(query)
+                    queries.append((query, variables))
 
         return queries
 
-    def _build_query(self, field: Dict) -> str:
-        """Build a GraphQL query for a field"""
-        field_name = field['name']
+    def _get_type_string(self, type_ref: Dict) -> str:
+        """Convert a type reference to a GraphQL type string"""
+        if type_ref['kind'] == 'NON_NULL':
+            return f"{self._get_type_string(type_ref['ofType'])}!"
+        elif type_ref['kind'] == 'LIST':
+            return f"[{self._get_type_string(type_ref['ofType'])}]"
+        else:
+            return type_ref['name']
 
-        # Check if field has arguments that require values
-        has_required_args = False
+    def _generate_default_value(self, type_ref: Dict) -> Any:
+        """Generate a default value for a given type reference"""
+        if type_ref['kind'] == 'NON_NULL':
+            return self._generate_default_value(type_ref['ofType'])
+        elif type_ref['kind'] == 'SCALAR':
+            type_name = type_ref['name']
+            if type_name == 'Int':
+                return 0
+            elif type_name == 'Float':
+                return 0.0
+            elif type_name == 'String':
+                return "default"
+            elif type_name == 'Boolean':
+                return True
+            elif type_name == 'ID':
+                return "1"
+            else:
+                return "default"
+        elif type_ref['kind'] == 'LIST':
+            return []
+        else:
+            # For enum types, try to use the first value if available
+            return "default"
+
+    def _build_query(self, field: Dict) -> tuple:
+        """Build a GraphQL query for a field with arguments"""
+        field_name = field['name']
+        variables = {}
+        variable_definitions = []
+        args_list = []
+
+        # Handle arguments
         if field.get('args'):
             for arg in field['args']:
-                arg_type = self._get_base_type_name(arg['type'])
-                # Skip if required arguments without defaults
-                if self._is_required_type(arg['type']) and not arg.get('defaultValue'):
-                    has_required_args = True
-                    break
-
-        # Skip fields with required arguments for now
-        if has_required_args:
-            return None
+                arg_name = arg['name']
+                arg_type = arg['type']
+                # For required arguments without defaults, generate a value
+                if self._is_required_type(arg_type) and not arg.get('defaultValue'):
+                    var_name = f"var_{arg_name}"
+                    type_str = self._get_type_string(arg_type)
+                    variable_definitions.append(f"${var_name}: {type_str}")
+                    args_list.append(f"{arg_name}: ${var_name}")
+                    variables[var_name] = self._generate_default_value(arg_type)
+                else:
+                    # Skip optional arguments for now
+                    continue
 
         # Build the query
         query_parts = [field_name]
+        if args_list:
+            query_parts.append(f"({', '.join(args_list)})")
 
         # Add subfields if it's an object type
         field_type = self._get_base_type(field['type'])
@@ -211,7 +251,14 @@ class GraphQLScraper:
             if subfields:
                 query_parts.append(f"{{ {' '.join(subfields)} }}")
 
-        return ' '.join(query_parts)
+        # Build the final query string
+        query_body = ' '.join(query_parts)
+        if variable_definitions:
+            query_str = f"query({', '.join(variable_definitions)}) {{ {query_body} }}"
+        else:
+            query_str = f"query {{ {query_body} }}"
+
+        return query_str, variables
 
     def _get_base_type(self, type_ref: Dict) -> Optional[Dict]:
         """Get the base type from a type reference"""
@@ -244,11 +291,11 @@ class GraphQLScraper:
 
         return all_queries
 
-    def execute_query(self, query: str) -> Dict:
+    def execute_query(self, query: str, variables: Dict) -> Dict:
         """Execute a GraphQL query"""
         payload = {
-            'query': f"query {{ {query} }}",
-            'variables': {},
+            'query': query,
+            'variables': variables,
             'operationName': None
         }
 
@@ -288,14 +335,15 @@ class GraphQLScraper:
         # 3. Execute all queries
         results = []
 
-        for i, query in enumerate(queries, 1):
+        for i, (query, variables) in enumerate(queries, 1):
             print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
 
-            result = self.execute_query(query)
+            result = self.execute_query(query, variables)
 
             success = 'errors' not in result and 'error' not in result
             results.append({
                 'query': query,
+                'variables': variables,
                 'result': result,
                 'success': success,
                 'errors': result.get('errors'),
