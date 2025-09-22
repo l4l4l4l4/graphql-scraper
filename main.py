@@ -212,7 +212,21 @@ class GraphQLScraper:
             # For enum types, try to use the first value if available
             return "default"
 
-    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 2) -> str:
+    def _get_first_scalar_field(self, field_type: Dict) -> Optional[str]:
+        """Get the first scalar field from a type"""
+        base_type = self._get_base_type(field_type)
+        if not base_type or base_type['kind'] in ['SCALAR', 'ENUM']:
+            return None
+        if base_type.get('fields'):
+            for field in base_type['fields']:
+                if field['name'].startswith('__'):
+                    continue
+                field_base_type = self._get_base_type(field['type'])
+                if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
+                    return field['name']
+        return None
+
+    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 3) -> str:
         """Recursively build a selection set for a field type"""
         if depth >= max_depth:
             return ""
@@ -228,11 +242,15 @@ class GraphQLScraper:
                     continue
                     
                 field_str = field['name']
-                # Recursively add subfields for non-leaf types
-                sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
-                if sub_selection:
-                    field_str += f" {{ {sub_selection} }}"
-                fields.append(field_str)
+                field_base_type = self._get_base_type(field['type'])
+                if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
+                    fields.append(field_str)
+                else:
+                    # For non-scalar fields, recurse
+                    sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
+                    if sub_selection:
+                        field_str += f" {{ {sub_selection} }}"
+                        fields.append(field_str)
                 
         return ' '.join(fields)
 
@@ -265,11 +283,13 @@ class GraphQLScraper:
         base_type = self._get_base_type(field['type'])
         if base_type and base_type['kind'] not in ['SCALAR', 'ENUM']:
             selection_set = self._build_selection_set(field['type'])
+            if not selection_set:
+                # If no selection set was built, try to find at least one scalar field
+                first_scalar = self._get_first_scalar_field(field['type'])
+                if first_scalar:
+                    selection_set = first_scalar
             if selection_set:
                 query_parts.append(f"{{ {selection_set} }}")
-            else:
-                # Include at least __typename if no other fields
-                query_parts.append("{ __typename }")
 
         # Build the final query string
         query_body = ' '.join(query_parts)
