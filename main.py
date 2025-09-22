@@ -7,9 +7,10 @@ import requests
 from urllib.parse import urlparse
 
 class GraphQLScraper:
-    def __init__(self, endpoint_url: str, headers: Optional[Dict[str, str]] = None):
+    def __init__(self, endpoint_url: str, headers: Optional[Dict[str, str]] = None, cookies: Optional[Dict[str, str]] = None):
         self.endpoint_url = endpoint_url
         self.headers = headers or {'Content-Type': 'application/json'}
+        self.cookies = cookies or {}
         self.schema = None
 
     def validate_url(self) -> bool:
@@ -159,7 +160,7 @@ class GraphQLScraper:
 
         return root_types
 
-    def generate_queries_for_type(self, type_def: Dict) -> List[tuple]:
+    def generate_queries_for_type(self, type_def: Dict, operation_type: str) -> List[tuple]:
         """Generate basic queries for a type"""
         queries = []
 
@@ -172,7 +173,7 @@ class GraphQLScraper:
                     continue
 
                 # Generate a query with arguments
-                query, variables = self._build_query(field)
+                query, variables = self._build_query(field, operation_type)
                 if query:
                     queries.append((query, variables))
 
@@ -211,7 +212,7 @@ class GraphQLScraper:
             # For enum types, try to use the first value if available
             return "default"
 
-    def _build_query(self, field: Dict) -> tuple:
+    def _build_query(self, field: Dict, operation_type: str) -> tuple:
         """Build a GraphQL query for a field with arguments"""
         field_name = field['name']
         variables = {}
@@ -254,9 +255,9 @@ class GraphQLScraper:
         # Build the final query string
         query_body = ' '.join(query_parts)
         if variable_definitions:
-            query_str = f"query({', '.join(variable_definitions)}) {{ {query_body} }}"
+            query_str = f"{operation_type}({', '.join(variable_definitions)}) {{ {query_body} }}"
         else:
-            query_str = f"query {{ {query_body} }}"
+            query_str = f"{operation_type} {{ {query_body} }}"
 
         return query_str, variables
 
@@ -285,7 +286,9 @@ class GraphQLScraper:
 
         for type_name, type_def in root_types.items():
             print(f"🔍 Generating queries for {type_name} type...")
-            queries = self.generate_queries_for_type(type_def)
+            # Convert type name to lowercase for GraphQL operation type
+            operation_type = type_name.lower()
+            queries = self.generate_queries_for_type(type_def, operation_type)
             all_queries.extend(queries)
             print(f"   Generated {len(queries)} queries for {type_name}")
 
@@ -303,6 +306,7 @@ class GraphQLScraper:
             response = requests.post(
                 self.endpoint_url,
                 headers=self.headers,
+                cookies=self.cookies,
                 json=payload,
                 timeout=30
             )
@@ -396,6 +400,10 @@ def main():
         '--auth-token', '-a',
         help='Authorization token (if required)'
     )
+    parser.add_argument(
+        '--cookie', '-c',
+        help='Cookie string (e.g., "session=abc123; token=xyz")'
+    )
 
     args = parser.parse_args()
 
@@ -404,7 +412,15 @@ def main():
     if args.auth_token:
         headers['Authorization'] = f'Bearer {args.auth_token}'
 
-    scraper = GraphQLScraper(args.endpoint_url, headers)
+    # Parse cookies if provided
+    cookies = {}
+    if args.cookie:
+        for cookie in args.cookie.split(';'):
+            if '=' in cookie:
+                key, value = cookie.strip().split('=', 1)
+                cookies[key] = value
+
+    scraper = GraphQLScraper(args.endpoint_url, headers, cookies)
 
     try:
         results = scraper.scrape_everything()
