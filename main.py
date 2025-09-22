@@ -136,7 +136,6 @@ class GraphQLScraper:
 
             self.schema = data['data']['__schema']
             print("✅ Schema fetched successfully")
-            json.dump(self.schema, open("schema.json", 'w'))
             return self.schema
 
         except requests.exceptions.RequestException as e:
@@ -469,7 +468,6 @@ class GraphQLScraper:
             'successful': len(successful_queries),
             'failed': len(failed_queries),
             'skipped_mutations': len(mutations),
-            'coverage': coverage,
             'results': results
         }
 
