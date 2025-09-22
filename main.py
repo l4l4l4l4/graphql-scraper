@@ -224,12 +224,7 @@ class GraphQLScraper:
             
         # Get the type definition from the schema
         type_name = base_type['name']
-        type_def = None
-        for t in self.schema['types']:
-            if t['name'] == type_name:
-                type_def = t
-                break
-                
+        type_def = next((t for t in self.schema['types'] if t['name'] == type_name), None)
         if not type_def or not type_def.get('fields'):
             return ""
             
@@ -246,24 +241,6 @@ class GraphQLScraper:
                 sub_selection = self._build_selection_set(field['type'], depth + 1)
                 if sub_selection:
                     field_str += f" {{ {sub_selection} }}"
-                else:
-                    # If no sub-selection could be built, try to include at least one field
-                    sub_type_name = field_base_type['name']
-                    sub_type_def = None
-                    for t in self.schema['types']:
-                        if t['name'] == sub_type_name:
-                            sub_type_def = t
-                            break
-                    
-                    if sub_type_def and sub_type_def.get('fields'):
-                        # Find the first scalar field
-                        for sub_field in sub_type_def['fields']:
-                            if sub_field['name'].startswith('__'):
-                                continue
-                            sub_field_base_type = self._get_base_type(sub_field['type'])
-                            if sub_field_base_type and sub_field_base_type['kind'] in ['SCALAR', 'ENUM']:
-                                field_str += f" {{ {sub_field['name']} }}"
-                                break
             fields.append(field_str)
                 
         return ' '.join(fields)
@@ -299,9 +276,6 @@ class GraphQLScraper:
             selection_set = self._build_selection_set(field['type'])
             if selection_set:
                 query_parts.append(f"{{ {selection_set} }}")
-            else:
-                # Fallback: include id field if available
-                query_parts.append("{ id }")
 
         # Build the final query string
         query_body = ' '.join(query_parts)
@@ -398,24 +372,11 @@ class GraphQLScraper:
         for i, (query, variables) in enumerate(queries, 1):
             print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
             
-            # Improve default values based on parameter names
-            improved_vars = {}
-            for var_name, var_value in variables.items():
-                # Use better defaults based on parameter names
-                if 'id' in var_name.lower():
-                    improved_vars[var_name] = "1"
-                elif 'username' in var_name.lower():
-                    improved_vars[var_name] = "admin"
-                elif 'first' in var_name.lower() or 'last' in var_name.lower():
-                    improved_vars[var_name] = 10
-                else:
-                    improved_vars[var_name] = var_value
-            
-            result = self.execute_query(query, improved_vars)
+            result = self.execute_query(query, variables)
             success = 'errors' not in result and 'error' not in result
             results.append({
                 'query': query,
-                'variables': improved_vars,
+                'variables': variables,
                 'result': result,
                 'success': success,
                 'errors': result.get('errors'),
