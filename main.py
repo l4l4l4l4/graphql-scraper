@@ -318,6 +318,46 @@ class GraphQLScraper:
             type_ref = type_ref['ofType']
         return type_ref
 
+    def _extract_parameters_from_result(self, data: Dict, parameter_values: Dict):
+        """Recursively extract IDs and other values from query results"""
+        if not isinstance(data, dict) and not isinstance(data, list):
+            return
+        
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key == 'id' and isinstance(value, str):
+                    if 'ids' not in parameter_values:
+                        parameter_values['ids'] = []
+                    if value not in parameter_values['ids']:
+                        parameter_values['ids'].append(value)
+                elif key == 'username' and isinstance(value, str):
+                    if 'usernames' not in parameter_values:
+                        parameter_values['usernames'] = []
+                    if value not in parameter_values['usernames']:
+                        parameter_values['usernames'].append(value)
+                elif isinstance(value, str):
+                    if 'strings' not in parameter_values:
+                        parameter_values['strings'] = []
+                    if value not in parameter_values['strings']:
+                        parameter_values['strings'].append(value)
+                elif isinstance(value, int):
+                    if 'ints' not in parameter_values:
+                        parameter_values['ints'] = []
+                    if value not in parameter_values['ints']:
+                        parameter_values['ints'].append(value)
+                elif isinstance(value, bool):
+                    if 'bools' not in parameter_values:
+                        parameter_values['bools'] = []
+                    if value not in parameter_values['bools']:
+                        parameter_values['bools'].append(value)
+                
+                # Recursively process nested structures
+                self._extract_parameters_from_result(value, parameter_values)
+        
+        elif isinstance(data, list):
+            for item in data:
+                self._extract_parameters_from_result(item, parameter_values)
+
     def _get_base_type_name(self, type_ref: Dict) -> Optional[str]:
         """Get the base type name from a type reference"""
         base_type = self._get_base_type(type_ref)
@@ -379,50 +419,123 @@ class GraphQLScraper:
         # 1. Fetch schema
         self.fetch_schema()
 
-        # 2. Generate all queries
-        queries = self.generate_all_queries()
-        print(f"✅ Generated {len(queries)} total queries")
+        # 2. Generate all queries and separate mutations
+        all_operations = self.generate_all_queries()
+        queries = []
+        mutations = []
+        
+        for op, vars in all_operations:
+            if op.startswith('mutation'):
+                mutations.append((op, vars))
+            else:
+                queries.append((op, vars))
+                
+        print(f"✅ Generated {len(queries)} queries and {len(mutations)} mutations")
 
-        if not queries:
-            print("❌ No queries generated. The schema might not have queryable fields.")
-            return {'total_queries': 0, 'successful': 0, 'failed': 0, 'coverage': 0, 'results': []}
-
-        # 3. Execute all queries
-        results = []
-
+        # 3. First, execute non-parameterized queries to gather IDs and other parameters
+        print("🔍 First pass: executing non-parameterized queries...")
+        first_pass_results = []
+        parameter_values = {}
+        
+        # Execute queries without parameters first
         for i, (query, variables) in enumerate(queries, 1):
-            print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
+            if not variables:  # No parameters needed
+                print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
+                result = self.execute_query(query, variables)
+                success = 'errors' not in result and 'error' not in result
+                first_pass_results.append({
+                    'query': query,
+                    'variables': variables,
+                    'result': result,
+                    'success': success,
+                    'errors': result.get('errors'),
+                    'error': result.get('error')
+                })
+                
+                # Extract IDs and other values from successful results
+                if success and 'data' in result:
+                    self._extract_parameters_from_result(result['data'], parameter_values)
+                
+                time.sleep(0.1)
 
-            result = self.execute_query(query, variables)
+        # 4. Now execute parameterized queries with extracted values
+        print("🔍 Second pass: executing parameterized queries...")
+        second_pass_results = []
+        
+        for i, (query, variables) in enumerate(queries, 1):
+            if variables:  # This query has parameters
+                print(f"📊 Executing parameterized query {i}/{len(queries)}: {query[:50]}...")
+                
+                # Fill variables with extracted values
+                filled_variables = {}
+                for var_name, var_value in variables.items():
+                    # Try to find a suitable value based on the variable name or type
+                    value_found = None
+                    
+                    # Look for IDs first
+                    if 'id' in var_name.lower() and parameter_values.get('ids'):
+                        value_found = parameter_values['ids'][0]
+                    elif 'username' in var_name.lower() and parameter_values.get('usernames'):
+                        value_found = parameter_values['usernames'][0]
+                    elif parameter_values.get('strings'):
+                        value_found = parameter_values['strings'][0]
+                    elif parameter_values.get('ints'):
+                        value_found = parameter_values['ints'][0]
+                    elif parameter_values.get('bools'):
+                        value_found = parameter_values['bools'][0]
+                    
+                    if value_found is not None:
+                        filled_variables[var_name] = value_found
+                    else:
+                        # If no value found, use the original generated value
+                        filled_variables[var_name] = var_value
+                
+                result = self.execute_query(query, filled_variables)
+                success = 'errors' not in result and 'error' not in result
+                second_pass_results.append({
+                    'query': query,
+                    'variables': filled_variables,
+                    'result': result,
+                    'success': success,
+                    'errors': result.get('errors'),
+                    'error': result.get('error')
+                })
+                
+                time.sleep(0.1)
 
-            success = 'errors' not in result and 'error' not in result
-            results.append({
-                'query': query,
+        # 5. Add mutations to results without executing them
+        mutation_results = []
+        for mutation, variables in mutations:
+            mutation_results.append({
+                'query': mutation,
                 'variables': variables,
-                'result': result,
-                'success': success,
-                'errors': result.get('errors'),
-                'error': result.get('error')
+                'result': {'skipped': True, 'message': 'Mutations are not executed'},
+                'success': False,
+                'errors': ['Mutation skipped - not executed for safety'],
+                'error': None
             })
 
-            # Add delay to avoid overwhelming the server
-            time.sleep(0.1)
+        # 6. Combine all results
+        results = first_pass_results + second_pass_results + mutation_results
+        all_queries = queries + mutations
 
-        # 4. Analyze results
+        # 7. Analyze results
         successful_queries = [r for r in results if r['success']]
         failed_queries = [r for r in results if not r['success']]
 
-        coverage = (len(successful_queries) / len(queries)) * 100 if queries else 0
+        coverage = (len(successful_queries) / len(all_queries)) * 100 if all_queries else 0
 
         print(f"\n📈 Scraping Results:")
         print(f"✅ Successful queries: {len(successful_queries)}")
         print(f"❌ Failed queries: {len(failed_queries)}")
+        print(f"⏭️  Skipped mutations: {len(mutations)}")
         print(f"📊 Total coverage: {coverage:.2f}%")
 
         return {
-            'total_queries': len(queries),
+            'total_queries': len(all_queries),
             'successful': len(successful_queries),
             'failed': len(failed_queries),
+            'skipped_mutations': len(mutations),
             'coverage': coverage,
             'results': results
         }
