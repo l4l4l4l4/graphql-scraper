@@ -176,7 +176,7 @@ class GraphQLScraper:
                 # Generate a query with arguments
                 query, variables = self._build_query(field, operation_type)
                 if query:
-                    queries.append((query, variables))
+                    queries.append((field_name, query, variables))
 
         return queries
 
@@ -378,33 +378,37 @@ class GraphQLScraper:
         queries = []
         mutations = []
         
-        for op, vars in all_operations:
+        for field_name, op, vars in all_operations:
             if op.startswith('mutation'):
-                mutations.append((op, vars))
+                mutations.append((field_name, op, vars))
             else:
-                queries.append((op, vars))
+                queries.append((field_name, op, vars))
                 
         print(f"✅ Generated {len(queries)} queries and {len(mutations)} mutations")
 
         # 3. Execute all queries and save results
         results = []
-        for i, (query, variables) in enumerate(queries, 1):
-            print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
+        for i, (field_name, query, variables) in enumerate(queries, 1):
+            print(f"📊 Executing query {i}/{len(queries)}: {field_name}...")
             
             result = self.execute_query(query, variables)
             success = 'errors' not in result and 'error' not in result
             
+            # Sanitize field name for filename
+            safe_field_name = "".join(c for c in field_name if c.isalnum() or c in ('-', '_')).rstrip()
+            
             # Save query to file
-            query_filename = f"query_{i:03d}.graphql"
+            query_filename = f"{safe_field_name}.graphql"
             with open(os.path.join(queries_dir, query_filename), 'w') as f:
                 f.write(query)
             
             # Save response to file
-            response_filename = f"response_{i:03d}.json"
+            response_filename = f"{safe_field_name}.json"
             with open(os.path.join(responses_dir, response_filename), 'w') as f:
                 json.dump(result, f, indent=2)
             
             results.append({
+                'field_name': field_name,
                 'query': query,
                 'variables': variables,
                 'result': result,
@@ -415,12 +419,16 @@ class GraphQLScraper:
             time.sleep(0.1)
 
         # 4. Save mutations to files without executing them
-        for i, (mutation, variables) in enumerate(mutations, 1):
-            mutation_filename = f"mutation_{i:03d}.graphql"
+        for i, (field_name, mutation, variables) in enumerate(mutations, 1):
+            # Sanitize field name for filename
+            safe_field_name = "".join(c for c in field_name if c.isalnum() or c in ('-', '_')).rstrip()
+            
+            mutation_filename = f"{safe_field_name}.graphql"
             with open(os.path.join(mutations_dir, mutation_filename), 'w') as f:
                 f.write(mutation)
             
             results.append({
+                'field_name': field_name,
                 'query': mutation,
                 'variables': variables,
                 'result': {'skipped': True, 'message': 'Mutations are not executed'},
