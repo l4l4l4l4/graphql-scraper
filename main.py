@@ -352,13 +352,23 @@ class GraphQLScraper:
         except json.JSONDecodeError as e:
             return {'error': f'Invalid JSON response: {e}'}
 
-    def scrape_everything(self) -> Dict:
+    def scrape_everything(self, output_dir: str) -> Dict:
         """Main scraping function"""
         print(f"🚀 Starting GraphQL scraping...")
         print(f"📡 Target endpoint: {self.endpoint_url}")
 
         if not self.validate_url():
             raise ValueError("Invalid URL format")
+
+        # Create output directories
+        import os
+        queries_dir = os.path.join(output_dir, 'queries')
+        mutations_dir = os.path.join(output_dir, 'mutations')
+        responses_dir = os.path.join(output_dir, 'query_responses')
+        
+        os.makedirs(queries_dir, exist_ok=True)
+        os.makedirs(mutations_dir, exist_ok=True)
+        os.makedirs(responses_dir, exist_ok=True)
 
         # 1. Fetch schema
         self.fetch_schema()
@@ -376,13 +386,24 @@ class GraphQLScraper:
                 
         print(f"✅ Generated {len(queries)} queries and {len(mutations)} mutations")
 
-        # 3. Execute all queries
+        # 3. Execute all queries and save results
         results = []
         for i, (query, variables) in enumerate(queries, 1):
             print(f"📊 Executing query {i}/{len(queries)}: {query[:50]}...")
             
             result = self.execute_query(query, variables)
             success = 'errors' not in result and 'error' not in result
+            
+            # Save query to file
+            query_filename = f"query_{i:03d}.graphql"
+            with open(os.path.join(queries_dir, query_filename), 'w') as f:
+                f.write(query)
+            
+            # Save response to file
+            response_filename = f"response_{i:03d}.json"
+            with open(os.path.join(responses_dir, response_filename), 'w') as f:
+                json.dump(result, f, indent=2)
+            
             results.append({
                 'query': query,
                 'variables': variables,
@@ -393,8 +414,12 @@ class GraphQLScraper:
             })
             time.sleep(0.1)
 
-        # 4. Add mutations to results without executing them
-        for mutation, variables in mutations:
+        # 4. Save mutations to files without executing them
+        for i, (mutation, variables) in enumerate(mutations, 1):
+            mutation_filename = f"mutation_{i:03d}.graphql"
+            with open(os.path.join(mutations_dir, mutation_filename), 'w') as f:
+                f.write(mutation)
+            
             results.append({
                 'query': mutation,
                 'variables': variables,
@@ -416,6 +441,7 @@ class GraphQLScraper:
         print(f"❌ Failed queries: {len(failed_queries)}")
         print(f"⏭️  Skipped mutations: {len(mutations)}")
         print(f"📊 Total coverage: {coverage:.2f}%")
+        print(f"💾 Results saved to {output_dir}/")
 
         return {
             'total_queries': len(all_queries),
@@ -436,9 +462,9 @@ def main():
         help='GraphQL endpoint URL (e.g., https://api.example.com/graphql)'
     )
     parser.add_argument(
-        '--output', '-o',
-        default='graphql-scraping-results.json',
-        help='Output filename (default: graphql-scraping-results.json)'
+        '--output-dir', '-o',
+        default='result',
+        help='Output directory (default: result)'
     )
     parser.add_argument(
         '--delay', '-d',
@@ -473,13 +499,7 @@ def main():
     scraper = GraphQLScraper(args.endpoint_url, headers, cookies)
 
     try:
-        results = scraper.scrape_everything()
-
-        # Save results to file
-        with open(args.output, 'w') as f:
-            json.dump(results, f, indent=2)
-
-        print(f"💾 Results saved to {args.output}")
+        results = scraper.scrape_everything(args.output_dir)
 
         # Show sample successful results
         successful_results = [r for r in results['results'] if r['success']]
