@@ -212,6 +212,30 @@ class GraphQLScraper:
             # For enum types, try to use the first value if available
             return "default"
 
+    def _build_selection_set(self, field_type: Dict, depth: int = 0, max_depth: int = 2) -> str:
+        """Recursively build a selection set for a field type"""
+        if depth >= max_depth:
+            return ""
+            
+        base_type = self._get_base_type(field_type)
+        if not base_type or base_type['kind'] in ['SCALAR', 'ENUM']:
+            return ""
+            
+        fields = []
+        if base_type.get('fields'):
+            for field in base_type['fields']:
+                if field['name'].startswith('__'):
+                    continue
+                    
+                field_str = field['name']
+                # Recursively add subfields for non-leaf types
+                sub_selection = self._build_selection_set(field['type'], depth + 1, max_depth)
+                if sub_selection:
+                    field_str += f" {{ {sub_selection} }}"
+                fields.append(field_str)
+                
+        return ' '.join(fields)
+
     def _build_query(self, field: Dict, operation_type: str) -> tuple:
         """Build a GraphQL query for a field with arguments"""
         field_name = field['name']
@@ -219,39 +243,33 @@ class GraphQLScraper:
         variable_definitions = []
         args_list = []
 
-        # Handle arguments
+        # Handle arguments - include all required arguments (non-null) regardless of default value
         if field.get('args'):
             for arg in field['args']:
                 arg_name = arg['name']
                 arg_type = arg['type']
-                # For required arguments without defaults, generate a value
-                if self._is_required_type(arg_type) and not arg.get('defaultValue'):
+                # Include all required arguments (non-null types)
+                if self._is_required_type(arg_type):
                     var_name = f"var_{arg_name}"
                     type_str = self._get_type_string(arg_type)
                     variable_definitions.append(f"${var_name}: {type_str}")
                     args_list.append(f"{arg_name}: ${var_name}")
                     variables[var_name] = self._generate_default_value(arg_type)
-                else:
-                    # Skip optional arguments for now
-                    continue
 
         # Build the query
         query_parts = [field_name]
         if args_list:
             query_parts.append(f"({', '.join(args_list)})")
 
-        # Add subfields if it's not a leaf type (i.e., not scalar or enum)
+        # Build selection set for non-leaf types
         base_type = self._get_base_type(field['type'])
         if base_type and base_type['kind'] not in ['SCALAR', 'ENUM']:
-            subfields = ['__typename']
-            # For object types, add up to 3 additional fields
-            if base_type['kind'] == 'OBJECT' and base_type.get('fields'):
-                for subfield in base_type['fields']:
-                    if (not subfield['name'].startswith('__') and 
-                        subfield['name'] != '__typename' and 
-                        len(subfields) < 4):
-                        subfields.append(subfield['name'])
-            query_parts.append(f"{{ {' '.join(subfields)} }}")
+            selection_set = self._build_selection_set(field['type'])
+            if selection_set:
+                query_parts.append(f"{{ {selection_set} }}")
+            else:
+                # Include at least __typename if no other fields
+                query_parts.append("{ __typename }")
 
         # Build the final query string
         query_body = ' '.join(query_parts)
