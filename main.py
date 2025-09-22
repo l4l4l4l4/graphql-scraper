@@ -354,10 +354,22 @@ class GraphQLScraper:
         if base_type and base_type['kind'] not in ['SCALAR', 'ENUM']:
             selection_set = self._build_selection_set(field['type'])
             if not selection_set:
-                # If no selection set was built, try to find at least one scalar field
-                first_scalar = self._get_first_scalar_field(field['type'])
-                if first_scalar:
-                    selection_set = first_scalar
+                # If no selection set was built, try to find the first field (scalar or not)
+                if base_type and base_type.get('fields'):
+                    for field_def in base_type['fields']:
+                        if field_def['name'].startswith('__'):
+                            continue
+                        field_base_type = self._get_base_type(field_def['type'])
+                        if field_base_type and field_base_type['kind'] in ['SCALAR', 'ENUM']:
+                            selection_set = field_def['name']
+                        else:
+                            # For non-scalar, try to get a scalar field from it
+                            sub_selection = self._build_selection_set(field_def['type'], depth=1, max_depth=2)
+                            if not sub_selection:
+                                sub_selection = self._get_first_scalar_field(field_def['type'])
+                            if sub_selection:
+                                selection_set = f"{field_def['name']} {{ {sub_selection} }}"
+                        break  # use the first field
             if selection_set:
                 query_parts.append(f"{{ {selection_set} }}")
 
